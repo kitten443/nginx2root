@@ -1,3 +1,6 @@
 __pycache__/
 *.py[cod]
 .venv/
+/n2check
+/n2check.exe
+*.test

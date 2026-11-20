@@ -13,6 +13,9 @@ Python 3 чекер для **nginx2root** — набора из пяти уяз�
 В режиме `--local` дополнительно разбирает `nginx -V`, `nginx -T`,
 версию пакета ОС и состояние модуля SCTP.
 
+В репозитории две реализации с одинаковым CLI: Python (`n2check.py`)
+и Go (`n2check.go`, только стандартная библиотека).
+
 > ⚠️ Инструмент **только диагностирует**. Он не содержит эксплойтов,
 > не отправляет атакующих запросов и не проверяет фактическую
 > эксплуатацию. Запускайте его только на своих системах.
@@ -40,13 +43,21 @@ Python 3 чекер для **nginx2root** — набора из пяти уяз�
 
 ## Установка
 
-Требуется Python 3.8+ (только стандартная библиотека, зависимостей нет).
+Python 3.8+ (только стандартная библиотека, зависимостей нет) **или**
+Go 1.21+ (тоже только стандартная библиотека).
 Для `--local` нужен установленный nginx; для чтения конфигурации
 через `nginx -T` обычно нужен root.
 
 ```bash
 git clone https://github.com/kitten443/nginx2root.git
 cd nginx2root
+
+# Python
+python3 n2check.py --version
+
+# Go
+go build -o n2check .
+./n2check --version
 ```
 
 ## Использование
@@ -69,6 +80,18 @@ python3 n2check.py --file sites.txt
 python3 n2check.py --file sites.txt --threads 10
 python3 n2check.py --file sites.txt --threads 50 --async
 cat sites.txt | python3 n2check.py --file - --threads 10 --json
+```
+
+### Go-версия
+
+CLI, JSON-схема, коды возврата и правила проверки пакетов совпадают с Python.
+Собрать и запустить:
+
+```bash
+go build -o n2check .
+./n2check https://example.com --json
+sudo ./n2check --local
+./n2check --file sites.txt --threads 20
 ```
 
 Пример `sites.txt`:
@@ -324,7 +347,11 @@ echo 'install sctp /bin/false' | sudo tee /etc/modprobe.d/disable-sctp.conf
 ## Тесты
 
 ```bash
+# Python
 python3 -m unittest discover -s tests -v
+
+# Go
+go test ./...
 ```
 
 ## Ограничения
