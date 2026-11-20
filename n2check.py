@@ -33,7 +33,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from itertools import zip_longest
 
-VERSION = '1.2.0'
+VERSION = '1.3.0'
 
 # Исправленные релизы nginx (18.11.2026): стабильная и mainline-ветки.
 FIXED_STABLE = (1, 30, 7)
