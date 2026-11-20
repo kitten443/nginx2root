@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-const version = "1.3.0"
+const version = "1.4.0"
 
 var fixedStable = [3]int{1, 30, 7}
 var fixedMainline = [3]int{1, 31, 9}

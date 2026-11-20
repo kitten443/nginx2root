@@ -1,6 +1,6 @@
-# nginx2root — чекер уязвимости (Python 3)
+# nginx2root — чекер уязвимости (Python 3 / Go)
 
-Python 3 чекер для **nginx2root** — набора из пяти уязвимостей nginx
+Чекер для **nginx2root** — набора из пяти уязвимостей nginx
 ([CVE-2026-123007](https://www.cve.org/CVERecord?id=CVE-2026-123007),
 [CVE-2026-123634](https://www.cve.org/CVERecord?id=CVE-2026-123634),
 [CVE-2026-123633](https://www.cve.org/CVERecord?id=CVE-2026-123633),
@@ -19,6 +19,308 @@ Python 3 чекер для **nginx2root** — набора из пяти уяз�
 > ⚠️ Инструмент **только диагностирует**. Он не содержит эксплойтов,
 > не отправляет атакующих запросов и не проверяет фактическую
 > эксплуатацию. Запускайте его только на своих системах.
+
+## Установка Python и Go
+
+В репозитории две реализации: Python (`n2check.py`) и Go (`n2check.go`).
+Обе используют только стандартную библиотеку, поэтому `pip install`,
+`npm install` и внешние Go-модули не нужны.
+
+| Инструмент | Минимум | Рекомендуется |
+|---|---|---|
+| Python | 3.8 | 3.11+ (3.12/3.13/3.14) |
+| Go | 1.21 | 1.27.x |
+
+Для `--local` нужен установленный nginx; для чтения конфигурации через
+`nginx -T` обычно нужен root.
+
+### Python
+
+Сначала проверьте, что уже установлено:
+
+```bash
+python3 --version
+python --version
+```
+
+Если команда не найдена или версия ниже 3.8 — установите Python одним из
+способов ниже. Для новых систем берите 3.11+; ветки 3.8–3.10 уже не
+получают обычных обновлений безопасности.
+
+#### Linux: универсальный способ через pyenv
+
+Подходит, если нужна конкретная версия и нет root:
+
+```bash
+curl https://pyenv.run | bash
+```
+
+Добавьте в `~/.bashrc` или `~/.zshrc`:
+
+```bash
+export PYENV_ROOT="$HOME/.pyenv"
+export PATH="$PYENV_ROOT/bin:$PATH"
+eval "$(pyenv init -)"
+```
+
+Затем:
+
+```bash
+exec "$SHELL"
+pyenv install --list | grep -E '^  3\.(11|12|13|14)'
+pyenv install 3.12.8       # подставьте любую версию из списка
+pyenv global 3.12.8
+python --version
+```
+
+#### Debian и Ubuntu
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv
+python3 --version
+```
+
+Если нужна более новая версия в Ubuntu:
+
+```bash
+sudo add-apt-repository -y ppa:deadsnakes/ppa
+sudo apt update
+sudo apt install -y python3.12 python3.12-venv
+python3.12 --version
+```
+
+В Debian для нестандартной версии используйте pyenv или backports —
+deadsnakes предназначен для Ubuntu.
+
+#### RHEL, Fedora, AlmaLinux, Rocky, Oracle Linux, Amazon Linux
+
+```bash
+sudo dnf install -y python3 python3-pip
+python3 --version
+```
+
+Если в репозитории есть отдельные версии:
+
+```bash
+sudo dnf install -y python3.12
+python3.12 --version
+```
+
+В Amazon Linux 2 вместо `dnf` используйте `yum`. Если нужной версии нет
+в репозитории, ставьте pyenv.
+
+#### Alpine Linux
+
+```bash
+sudo apk add python3
+python3 --version
+```
+
+#### Arch Linux
+
+```bash
+sudo pacman -S python
+python3 --version
+```
+
+#### SUSE / openSUSE
+
+```bash
+sudo zypper install python3
+python3 --version
+```
+
+#### macOS
+
+```bash
+xcode-select --install
+brew install python@3.12
+python3.12 --version
+```
+
+Или скачайте установщик с [python.org](https://www.python.org/downloads/).
+Для нескольких версий удобен pyenv:
+
+```bash
+brew install pyenv
+pyenv install 3.12.8
+pyenv global 3.12.8
+```
+
+#### Windows
+
+1. Скачайте установщик с [python.org](https://www.python.org/downloads/windows/).
+2. При установке включите **Add python.exe to PATH**.
+3. Откройте новый терминал и проверьте:
+
+```powershell
+py --version
+py -3.12 n2check.py --version
+```
+
+Вариант через winget:
+
+```powershell
+winget install -e --id Python.Python.3.12
+```
+
+Если `py` не найден, переустановите Python с включённым PATH или
+используйте полный путь к `python.exe`.
+
+#### Виртуальное окружение (необязательно)
+
+Скрипту не нужны сторонние пакеты, но venv полезен, чтобы не смешивать
+версии:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+python --version
+```
+
+### Go
+
+Проверьте установленную версию:
+
+```bash
+go version
+```
+
+Нужен Go 1.21+. Если версия ниже или команда не найдена — установите Go.
+
+#### Linux: официальный tarball
+
+Самый предсказуемый способ получить свежую версию:
+
+```bash
+GO_VERSION=1.27.4
+ARCH=amd64          # для ARM64: ARCH=arm64
+
+curl -LO "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz"
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf "go${GO_VERSION}.linux-${ARCH}.tar.gz"
+export PATH="$PATH:/usr/local/go/bin"
+go version
+```
+
+Чтобы PATH сохранился после перезагрузки:
+
+```bash
+echo 'export PATH="$PATH:/usr/local/go/bin"' >> ~/.profile
+source ~/.profile
+```
+
+Актуальную версию смотрите на [go.dev/dl](https://go.dev/dl/) или:
+
+```bash
+curl -s 'https://go.dev/VERSION?m=text'
+```
+
+#### Linux без root
+
+```bash
+GO_VERSION=1.27.4
+mkdir -p "$HOME/.local"
+curl -LO "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+tar -C "$HOME/.local" -xzf "go${GO_VERSION}.linux-amd64.tar.gz"
+export PATH="$HOME/.local/go/bin:$PATH"
+go version
+```
+
+#### Пакетные менеджеры
+
+```bash
+# Debian / Ubuntu (проверьте версию: может быть старее 1.21)
+sudo apt install -y golang-go
+
+# RHEL / Fedora / AlmaLinux / Rocky / Oracle Linux / Amazon Linux
+sudo dnf install -y golang
+# или, если доступен go-toolset:
+sudo dnf install -y go-toolset
+
+# Alpine
+sudo apk add go
+
+# Arch
+sudo pacman -S go
+
+# SUSE / openSUSE
+sudo zypper install go
+```
+
+После установки из пакетного менеджера обязательно проверьте `go version`.
+Если версия ниже 1.21 — используйте официальный tarball.
+
+#### macOS
+
+```bash
+brew install go
+go version
+```
+
+Или установщик `.pkg` с [go.dev/dl](https://go.dev/dl/).
+
+#### Windows
+
+1. Скачайте MSI с [go.dev/dl](https://go.dev/dl/).
+2. Установите (по умолчанию `C:\Program Files\Go`).
+3. Откройте новый терминал:
+
+```powershell
+go version
+go env GOROOT GOPATH
+```
+
+Вариант через winget:
+
+```powershell
+winget install -e --id GoLang.Go
+```
+
+Если `go` не найден, добавьте `C:\Program Files\Go\bin` в PATH.
+
+#### Конкретная версия Go
+
+Если нужна не одна, а несколько версий, удобно использовать официальный
+launcher (требует уже установленный Go):
+
+```bash
+go install golang.org/dl/go1.27.4@latest
+"$(go env GOPATH)/bin/go1.27.4" download
+"$(go env GOPATH)/bin/go1.27.4" version
+```
+
+Либо распакуйте tarball в отдельный каталог и вызывайте его напрямую:
+
+```bash
+sudo tar -C /opt -xzf go1.27.4.linux-amd64.tar.gz
+/opt/go/bin/go version
+```
+
+### Сборка проекта
+
+```bash
+git clone https://github.com/kitten443/nginx2root.git
+cd nginx2root
+
+# Python
+python3 n2check.py --version
+
+# Go
+go build -o n2check .
+./n2check --version
+```
+
+Windows:
+
+```powershell
+py n2check.py --version
+go build -o n2check.exe .
+.\n2check.exe --version
+```
+
+`go mod download` не нужен: внешних зависимостей нет.
 
 ## Что делает
 
@@ -40,25 +342,6 @@ Python 3 чекер для **nginx2root** — набора из пяти уяз�
 - **SCTP**: в `--local` проверяет, загружен ли модуль, встроен ли он в ядро
   и заблокирован ли через `modprobe.d`. Это advisory: на код возврата
   не влияет.
-
-## Установка
-
-Python 3.8+ (только стандартная библиотека, зависимостей нет) **или**
-Go 1.21+ (тоже только стандартная библиотека).
-Для `--local` нужен установленный nginx; для чтения конфигурации
-через `nginx -T` обычно нужен root.
-
-```bash
-git clone https://github.com/kitten443/nginx2root.git
-cd nginx2root
-
-# Python
-python3 n2check.py --version
-
-# Go
-go build -o n2check .
-./n2check --version
-```
 
 ## Использование
 
@@ -343,16 +626,6 @@ echo 'install sctp /bin/false' | sudo tee /etc/modprobe.d/disable-sctp.conf
 и `fixed_cves` — какие именно CVE закрыл пакет.
 В `--file --json` каждый результат — отдельная JSON-строка (JSON Lines)
 с полем `url`.
-
-## Тесты
-
-```bash
-# Python
-python3 -m unittest discover -s tests -v
-
-# Go
-go test ./...
-```
 
 ## Ограничения
 
