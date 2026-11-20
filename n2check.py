@@ -6,7 +6,8 @@ CVE-2026-123633, CVE-2026-121810, CVE-2026-113425).
 Проверяет сайт по URL, список сайтов из файла или локальный nginx и
 сообщает, уязвима ли версия к nginx2root. В режиме --local дополнительно
 разбираются сборочные флаги и конфигурация nginx (`nginx -V`, `nginx -T`),
-а также состояние модуля SCTP в ядре — без него цепочка не даёт root.
+версия пакета ОС (dpkg/rpm/apk/pacman/pkg) и состояние модуля SCTP в ядре —
+без него цепочка не даёт root.
 
 Инструмент только читает версию, заголовки и конфигурацию. Эксплойтов он
 не содержит и никаких атакующих запросов не отправляет.
@@ -20,6 +21,7 @@ import glob
 import json
 import platform
 import re
+import shutil
 import socket
 import ssl
 import subprocess
@@ -29,28 +31,81 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from itertools import zip_longest
 
-VERSION = '1.1.0'
+VERSION = '1.2.0'
 
 # Исправленные релизы nginx (18.11.2026): стабильная и mainline-ветки.
 FIXED_STABLE = (1, 30, 7)
 FIXED_MAINLINE = (1, 31, 9)
 
-# Debian уже выпустил security-патчи для более низких версий nginx:
-# bookworm — DLA-4918-1, trixie — DSA-6642-1, sid — 1.30.6-4.
+# Debian и Ubuntu уже выпустили security-патчи для низких версий nginx.
 # Версия nginx при этом не меняется, поэтому сравнивать нужно версию пакета.
-DEBIAN_FIXED = {
+DEB_FIXED = {
+    # Debian
     'bookworm': '1.22.1-9+deb12u11',
     'trixie': '1.26.3-3+deb13u11',
     'forky': '1.30.6-4',
     'sid': '1.30.6-4',
+    # Ubuntu (USN-9159-1)
+    'stonking': '1.30.4-7ubuntu1.2',
+    'resolute': '1.28.3-2ubuntu1.13',
+    'noble': '1.24.0-2ubuntu7.20',
+    'jammy': '1.18.0-6ubuntu14.23',
+    'focal': '1.18.0-0ubuntu1.7+esm5',
+    'bionic': '1.14.0-0ubuntu1.11+esm6',
+    'xenial': '1.10.3-0ubuntu0.16.04.5+esm11',
+    'trusty': '1.4.6-1ubuntu3.9+esm10',
 }
-DEBIAN_ADVISORY = {
+DEB_ADVISORY = {
     'bookworm': 'DLA-4918-1',
     'trixie': 'DSA-6642-1',
     'forky': '',
     'sid': '',
+    'stonking': 'USN-9159-1',
+    'resolute': 'USN-9159-1',
+    'noble': 'USN-9159-1',
+    'jammy': 'USN-9159-1',
+    'focal': 'USN-9159-1',
+    'bionic': 'USN-9159-1',
+    'xenial': 'USN-9159-1',
+    'trusty': 'USN-9159-1',
 }
+
+# Для обратной совместимости с ранними версиями скрипта.
+DEBIAN_FIXED = {key: DEB_FIXED[key] for key in
+                ('bookworm', 'trixie', 'forky', 'sid')}
+DEBIAN_ADVISORY = {key: DEB_ADVISORY[key] for key in
+                   ('bookworm', 'trixie', 'forky', 'sid')}
+
+# Alpine: исправленные версии по веткам (secdb.alpinelinux.org).
+ALPINE_FIXED = {
+    'edge': '1.30.7-r0',
+    '3.24': '1.30.7-r0',
+    '3.23': '1.28.3-r8',
+    '3.22': '1.28.3-r8',
+    '3.21': '1.26.3-r4',
+}
+ALPINE_ADVISORY = {
+    'edge': 'Alpine secdb',
+    '3.24': 'Alpine secdb',
+    '3.23': 'Alpine secdb',
+    '3.22': 'Alpine secdb',
+    '3.21': 'Alpine secdb',
+}
+
+# SUSE: фикс по веткам (Tumbleweed закрывается upstream-версией,
+# для SLES 15 пакеты были в QA на 19.11.2026).
+SUSE_FIXED = {
+    '150400': '1.21.5-150400.3.28.1',
+    '150600': '1.21.5-150600.10.30.1',
+}
+
+# CVE, по которым определяем, что RPM-пакет собран с исправлениями.
+_N2ROOT_CVE_RE = re.compile(
+    r'CVE-2026-(?:123007|123634|123633|121810|113425)', re.IGNORECASE)
+_N2ROOT_TEXT_RE = re.compile(
+    r'nginx2root|flow[- ]control window overflow', re.IGNORECASE)
 
 # Данные nginx.org/en/security_advisories.html: first — первый уязвимый
 # релиз, исправление для всех — 1.30.7+ / 1.31.9+.
@@ -193,6 +248,15 @@ def compare_debian_versions(left, right):
     return None
 
 
+def _read_text(path):
+    """Прочитать текстовый файл ('' при ошибке/отсутствии)."""
+    try:
+        with open(path, encoding='utf-8', errors='replace') as file:
+            return file.read()
+    except OSError:
+        return ''
+
+
 def _os_release():
     """Прочитать /etc/os-release в dict (пустой dict при ошибке)."""
     data = {}
@@ -210,18 +274,47 @@ def _os_release():
 
 
 def debian_suite():
-    """Кодовое имя Debian (bookworm/trixie/...) или None."""
+    """Кодовое имя Debian/Ubuntu (bookworm/jammy/...) или None."""
     data = _os_release()
-    if data.get('ID', '').lower() not in ('debian', 'raspbian'):
+    if data.get('ID', '').lower() not in ('debian', 'raspbian', 'ubuntu'):
         return None
     return data.get('VERSION_CODENAME') or data.get('DEBIAN_CODENAME') or None
 
 
-def debian_package_info(package, version, suite=None):
-    """Оценить, исправлен ли Debian-пакет nginx для nginx2root.
+def os_family():
+    """Семейство дистрибутива: debian, ubuntu, rpm, alpine, arch, freebsd."""
+    data = _os_release()
+    if not data:
+        if platform.system() == 'FreeBSD':
+            return 'freebsd'
+        return None
+    identifier = data.get('ID', '').lower()
+    like = set(data.get('ID_LIKE', '').lower().split())
+    names = {identifier} | like
+    if identifier == 'freebsd' or platform.system() == 'FreeBSD':
+        return 'freebsd'
+    if 'ubuntu' in names:
+        return 'ubuntu'
+    if names & {'debian', 'raspbian'}:
+        return 'debian'
+    if 'alpine' in names:
+        return 'alpine'
+    if 'arch' in names:
+        return 'arch'
+    if names & {'sles', 'suse', 'opensuse', 'opensuse-leap', 'opensuse-tumbleweed'}:
+        return 'suse'
+    if names & {'rhel', 'fedora', 'centos', 'rocky', 'almalinux', 'oracle',
+                'ol', 'amzn', 'amazon'}:
+        return 'rpm'
+    return None
 
-    Для bookworm/trixie фикс уже выпущен (DLA-4918-1 / DSA-6642-1),
-    при этом `nginx -v` продолжает показывать 1.22.1 / 1.26.3.
+
+def debian_package_info(package, version, suite=None):
+    """Оценить, исправлен ли Debian/Ubuntu-пакет nginx для nginx2root.
+
+    Для Debian bookworm/trixie фикс уже выпущен (DLA-4918-1 / DSA-6642-1),
+    для Ubuntu — USN-9159-1. При этом `nginx -v` продолжает показывать
+    старую upstream-версию.
     """
     suite = suite or debian_suite()
     if suite is None:
@@ -230,15 +323,20 @@ def debian_package_info(package, version, suite=None):
             suite = 'bookworm'
         elif 'deb13' in version:
             suite = 'trixie'
+        elif version.startswith('1.30.6-4'):
+            suite = 'sid'
+        elif version.startswith('1.30.6-3'):
+            suite = 'forky'
 
-    fixed = DEBIAN_FIXED.get(suite)
+    fixed = DEB_FIXED.get(suite)
     info = {
         'package': package,
         'version': version,
         'suite': suite,
         'fixed_version': fixed,
-        'advisory': DEBIAN_ADVISORY.get(suite) or None,
+        'advisory': DEB_ADVISORY.get(suite) or None,
         'status': 'unknown',
+        'source': 'dpkg',
     }
     if fixed is None:
         return info
@@ -261,6 +359,7 @@ def debian_package_info(package, version, suite=None):
     comparison = compare_debian_versions(version, fixed)
     if comparison == 1:
         info['status'] = 'fixed'
+        info['fixed_cves'] = sorted(applicable_cves(version))
     elif comparison == -1:
         info['status'] = 'vulnerable'
     return info
@@ -708,6 +807,283 @@ def local_package_version():
     return package[1] if package else None
 
 
+def _command_output(command, timeout=10):
+    """Выполнить необязательную команду и вернуть stdout+stderr (или '')."""
+    try:
+        proc = subprocess.run(
+            command, capture_output=True, text=True, timeout=timeout,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return ''
+    return ((proc.stdout or '') + (proc.stderr or '')).strip()
+
+
+def _simple_rpm_compare(left, right):
+    """Упрощённое сравнение RPM EVR для известных версий nginx.
+
+    Возвращает 1, -1 или 0. Этого достаточно для версий вида
+    1.20.1-32.el9_9.2, 1.26.3-10.module+el9.9.0+... и 1.21.5-150400.3.28.1.
+    """
+    def split(value):
+        value = (value or '').strip()
+        epoch = 0
+        if ':' in value:
+            head, _, value = value.partition(':')
+            if head.isdigit():
+                epoch = int(head)
+        if '-' in value:
+            version, release = value.rsplit('-', 1)
+        else:
+            version, release = value, ''
+        return epoch, parse_version(version) or (0, 0, 0), release
+
+    left_epoch, left_version, left_release = split(left)
+    right_epoch, right_version, right_release = split(right)
+    if left_epoch != right_epoch:
+        return 1 if left_epoch > right_epoch else -1
+    if left_version != right_version:
+        return 1 if left_version > right_version else -1
+
+    def tokens(value):
+        return [int(part) if part.isdigit() else part
+                for part in re.findall(r'\d+|[A-Za-z]+', value)]
+
+    for left_part, right_part in zip_longest(
+            tokens(left_release), tokens(right_release), fillvalue=0):
+        if left_part == right_part:
+            continue
+        if isinstance(left_part, int) and isinstance(right_part, int):
+            return 1 if left_part > right_part else -1
+        return 1 if str(left_part) > str(right_part) else -1
+    return 0
+
+
+def applicable_cves(version):
+    """CVE, применимые к upstream-версии nginx (без учёта конфигурации)."""
+    if version is None:
+        return set()
+    _, rows = assess_version(parse_version(version))
+    return {row['cve'] for row in rows
+            if row['version_status'] == 'vulnerable'}
+
+
+def changelog_cves(text):
+    """CVE nginx2root, упомянутые в changelog RPM/пакета."""
+    return {match.group(0).upper()
+            for match in _N2ROOT_CVE_RE.finditer(text or '')}
+
+
+def _package_info(package, version, suite, status, source,
+                  fixed_version=None, advisory=None, fixed_cves=None):
+    info = {
+        'package': package,
+        'version': version,
+        'suite': suite,
+        'fixed_version': fixed_version,
+        'advisory': advisory,
+        'status': status,
+        'source': source,
+    }
+    if fixed_cves is not None:
+        info['fixed_cves'] = sorted(fixed_cves)
+    return info
+
+
+def upstream_package_status(version):
+    """Статус по upstream-версии: fixed, vulnerable или unknown."""
+    parsed = parse_version(version)
+    if parsed is None:
+        return 'unknown'
+    return 'fixed' if not version_affected(parsed, (1, 9, 5)) else 'vulnerable'
+
+
+def rpm_package_info(nginx_bin='nginx'):
+    """Проверить RPM-пакет nginx (RHEL, Fedora, SUSE, Alma, Rocky, Oracle, Amazon)."""
+    path = shutil.which(nginx_bin) or nginx_bin
+    package = None
+    version = None
+
+    query = _command_output([
+        'rpm', '-q', '--qf', '%{NAME}\t%{VERSION}-%{RELEASE}\n', '-f', path,
+    ])
+    for line in query.splitlines():
+        if '\t' in line:
+            package, version = line.split('\t', 1)
+            break
+
+    if not package:
+        for candidate in ('nginx', 'nginx-core', 'nginx-full', 'nginx-light'):
+            output = _command_output([
+                'rpm', '-q', '--qf', '%{NAME}\t%{VERSION}-%{RELEASE}',
+                candidate,
+            ])
+            if '\t' in output:
+                package, version = output.split('\t', 1)
+                break
+    if not package or not version:
+        return None
+
+    data = _os_release()
+    suite = ' '.join(filter(None, (data.get('ID'), data.get('VERSION_ID'))))
+    suite = suite or 'rpm'
+    applicable = applicable_cves(version)
+    changelog = _command_output(['rpm', '-q', '--changelog', package])
+    found = changelog_cves(changelog)
+    if not found and _N2ROOT_TEXT_RE.search(changelog):
+        # В changelog может не быть номера CVE — хотя бы ведущий фикс.
+        found = {'CVE-2026-123007'}
+    fixed_cves = found & applicable
+
+    if applicable and fixed_cves >= applicable:
+        status = 'fixed'
+        source = 'rpm-changelog'
+    elif fixed_cves:
+        status = 'partial'
+        source = 'rpm-changelog'
+    else:
+        status = upstream_package_status(version)
+        source = 'upstream'
+        if status == 'fixed':
+            fixed_cves = applicable
+
+    info = _package_info(
+        package, version, suite, status, source, fixed_cves=fixed_cves,
+    )
+    if status != 'fixed' and os_family() == 'suse':
+        release = version.rsplit('-', 1)[-1]
+        branch = release.split('.', 1)[0]
+        candidate = SUSE_FIXED.get(branch)
+        if candidate and _simple_rpm_compare(version, candidate) >= 0:
+            info.update(status='fixed', source='suse-advisory',
+                        fixed_version=candidate,
+                        fixed_cves=sorted(applicable))
+    return info
+
+
+def _alpine_version_key(value):
+    match = re.match(r'^(\d+)\.(\d+)\.(\d+)(?:-r(\d+))?', value or '')
+    if not match:
+        return None
+    return tuple(int(part or 0) for part in match.groups())
+
+
+def _simple_alpine_compare(left, right):
+    left_key = _alpine_version_key(left)
+    right_key = _alpine_version_key(right)
+    if left_key is None or right_key is None:
+        return None
+    if left_key == right_key:
+        return 0
+    return 1 if left_key > right_key else -1
+
+
+def alpine_package_info():
+    """Проверить пакет Alpine Linux (apk)."""
+    version = None
+    output = _command_output(['apk', 'info', '-v', 'nginx'])
+    match = re.search(r'nginx-(\d+\.\d+\.\d+(?:-r\d+)?)', output)
+    if match:
+        version = match.group(1)
+    if not version:
+        output = _command_output(['apk', 'list', '--installed', 'nginx'])
+        match = re.search(r'nginx-(\d+\.\d+\.\d+(?:-r\d+)?)', output)
+        if match:
+            version = match.group(1)
+    if not version:
+        return None
+
+    branch = ''
+    release = _read_text('/etc/alpine-release')
+    match = re.match(r'^(\d+\.\d+)', release)
+    if match:
+        branch = match.group(1)
+    if not branch and 'edge' in _read_text('/etc/apk/repositories'):
+        branch = 'edge'
+
+    fixed = ALPINE_FIXED.get(branch)
+    applicable = applicable_cves(version)
+    info = _package_info(
+        'nginx', version, branch or 'alpine', 'unknown', 'apk',
+        fixed_version=fixed, advisory=ALPINE_ADVISORY.get(branch),
+    )
+    if fixed:
+        comparison = _simple_alpine_compare(version, fixed)
+        if comparison in (0, 1):
+            info.update(status='fixed', fixed_cves=sorted(applicable))
+        elif comparison == -1:
+            info['status'] = 'vulnerable'
+        return info
+    status = upstream_package_status(version)
+    info.update(status=status, source='upstream')
+    if status == 'fixed':
+        info['fixed_cves'] = sorted(applicable)
+    return info
+
+
+def pacman_package_info():
+    """Проверить пакет Arch Linux (pacman)."""
+    package = 'nginx'
+    version = None
+    for candidate in ('nginx', 'nginx-mainline'):
+        output = _command_output(['pacman', '-Q', candidate])
+        match = re.match(r'(\S+)\s+(\S+)', output)
+        if match:
+            package, version = match.group(1), match.group(2)
+            break
+    if not version:
+        return None
+    status = upstream_package_status(version)
+    info = _package_info(
+        package, version, 'Arch Linux', status, 'pacman',
+        fixed_version='1.30.7 / 1.31.9',
+    )
+    if status == 'fixed':
+        info['fixed_cves'] = sorted(applicable_cves(version))
+    return info
+
+
+def freebsd_package_info():
+    """Проверить пакет FreeBSD (pkg)."""
+    version = None
+    for package in ('nginx', 'nginx-devel'):
+        output = _command_output(['pkg', 'query', '%v', package])
+        if output and not output.startswith('pkg:'):
+            version = output.splitlines()[0].strip()
+            break
+    if not version:
+        return None
+    status = upstream_package_status(version)
+    info = _package_info(
+        'nginx', version, 'FreeBSD', status, 'pkg',
+        fixed_version='1.30.7 / 1.31.9',
+    )
+    if status == 'fixed':
+        info['fixed_cves'] = sorted(applicable_cves(version))
+    return info
+
+
+def package_status(nginx_bin='nginx'):
+    """Определить статус установленного пакета nginx для текущей ОС."""
+    family = os_family()
+    if family in ('debian', 'ubuntu'):
+        package = local_package()
+        return debian_package_info(*package) if package else None
+    if family in ('rpm', 'suse'):
+        return rpm_package_info(nginx_bin)
+    if family == 'alpine':
+        return alpine_package_info()
+    if family == 'arch':
+        return pacman_package_info()
+    if family == 'freebsd':
+        return freebsd_package_info()
+
+    # Неизвестная ОС: пробуем dpkg, затем rpm.
+    package = local_package()
+    if package:
+        return debian_package_info(*package)
+    return rpm_package_info(nginx_bin)
+
+
 def kernel_sctp_advisory():
     """Проверить, доступен ли SCTP — усилитель nginx2root до root."""
     item = {
@@ -799,8 +1175,7 @@ def check_local(nginx_bin='nginx'):
         status, rows = assess_version(parse_version(version))
         details['version_source'] = 'nginx -v'
 
-        package = local_package()
-        package_info = debian_package_info(*package) if package else None
+        package_info = package_status(nginx_bin)
         if package_info:
             details['package'] = package_info
             details['package_version'] = package_info['version']
@@ -825,20 +1200,27 @@ def check_local(nginx_bin='nginx'):
             )
             apply_local_exposures(rows, {}, flags, False)
 
-        # Debian-патч важнее номера upstream-версии: nginx -v продолжает
-        # показывать 1.22.1/1.26.3, хотя пакет уже исправлен.
-        if package_info and package_info['status'] == 'fixed':
-            status = 'ok'
-            note = f"исправлено в Debian-пакете {package_info['version']}"
-            if package_info.get('advisory'):
-                note += f" ({package_info['advisory']})"
-            for row in rows:
-                # CVE, неприменимые к upstream-версии (например, HTTP/3
-                # в 1.22.1), не выдаём за «исправленные пакетом».
-                if row['version_status'] == 'ok':
-                    continue
-                row.update(version_status='ok', exposure='not_applicable',
-                           detail=note)
+        # Пакет дистрибутива важнее номера upstream-версии: nginx -v
+        # продолжает показывать старую версию, хотя пакет уже исправлен.
+        # fixed_cves учитывает, какие именно CVE закрыл вендор.
+        if package_info:
+            fixed_cves = set(package_info.get('fixed_cves') or [])
+            if fixed_cves:
+                suite = f" ({package_info['suite']})" if package_info.get('suite') else ''
+                note = (f"исправлено в пакете {package_info['version']}"
+                        f"{suite}")
+                if package_info.get('advisory'):
+                    note += f", advisory {package_info['advisory']}"
+                for row in rows:
+                    # CVE, неприменимые к upstream-версии (например, HTTP/3
+                    # в 1.22.1), не выдаём за «исправленные пакетом».
+                    if row['version_status'] == 'ok':
+                        continue
+                    if row['cve'] in fixed_cves:
+                        row.update(version_status='ok',
+                                   exposure='not_applicable', detail=note)
+            if package_info['status'] == 'fixed':
+                status = 'ok'
 
         details['cves'] = rows
         details['advisories'] = [kernel_sctp_advisory()]
@@ -953,6 +1335,7 @@ def _print_local_details(details):
         fixed = package.get('fixed_version')
         status = {
             'fixed': 'исправлено',
+            'partial': 'исправлено частично',
             'vulnerable': 'уязвимо',
         }.get(package.get('status'), 'не удалось сравнить')
         line = f"  Пакет: {package['package']} {package['version']}{suite} — {status}"
@@ -960,6 +1343,8 @@ def _print_local_details(details):
             line += f"; исправление: {fixed}"
         if package.get('advisory'):
             line += f" ({package['advisory']})"
+        if package.get('source'):
+            line += f" [{package['source']}]"
         print(line)
         if package.get('note'):
             print(f"  Примечание: {package['note']}")

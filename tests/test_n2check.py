@@ -137,13 +137,145 @@ class DebianTests(unittest.TestCase):
             'unknown',
         )
 
+        bookworm = n2check.debian_package_info(
+            'nginx', '1.22.1-9+deb12u11', suite='bookworm')
+        self.assertIn('CVE-2026-123007', bookworm['fixed_cves'])
+        self.assertNotIn('CVE-2026-121810', bookworm['fixed_cves'])
+
     def test_debian_suite(self):
         with mock.patch('n2check._os_release', return_value={
                 'ID': 'debian', 'VERSION_CODENAME': 'bookworm'}):
             self.assertEqual(n2check.debian_suite(), 'bookworm')
         with mock.patch('n2check._os_release', return_value={
                 'ID': 'ubuntu', 'VERSION_CODENAME': 'noble'}):
+            self.assertEqual(n2check.debian_suite(), 'noble')
+        with mock.patch('n2check._os_release', return_value={
+                'ID': 'fedora', 'VERSION_CODENAME': '43'}):
             self.assertIsNone(n2check.debian_suite())
+
+    def test_ubuntu_package_info(self):
+        fixed = n2check.debian_package_info(
+            'nginx', '1.18.0-6ubuntu14.23', suite='jammy')
+        self.assertEqual(fixed['status'], 'fixed')
+        self.assertEqual(fixed['advisory'], 'USN-9159-1')
+        # В 1.18.0 нет HTTP/3, CVE-2026-121810 к пакету не применима.
+        self.assertNotIn('CVE-2026-121810', fixed['fixed_cves'])
+        self.assertIn('CVE-2026-123007', fixed['fixed_cves'])
+
+        vulnerable = n2check.debian_package_info(
+            'nginx', '1.18.0-6ubuntu14.22', suite='jammy')
+        self.assertEqual(vulnerable['status'], 'vulnerable')
+
+        # 26.10: upstream 1.30.4 < 1.30.7, но пакет уже исправлен.
+        self.assertEqual(
+            n2check.debian_package_info(
+                'nginx', '1.30.4-7ubuntu1.2', suite='stonking')['status'],
+            'fixed',
+        )
+        self.assertEqual(
+            n2check.debian_package_info(
+                'nginx', '1.4.6-1ubuntu3.9+esm10', suite='trusty')['status'],
+            'fixed',
+        )
+
+
+class PackageFormatTests(unittest.TestCase):
+    def test_os_family(self):
+        with mock.patch('n2check._os_release', return_value={
+                'ID': 'ubuntu', 'ID_LIKE': 'debian'}):
+            self.assertEqual(n2check.os_family(), 'ubuntu')
+        with mock.patch('n2check._os_release', return_value={
+                'ID': 'rocky', 'ID_LIKE': 'rhel centos fedora'}):
+            self.assertEqual(n2check.os_family(), 'rpm')
+        with mock.patch('n2check._os_release', return_value={
+                'ID': 'alpine'}):
+            self.assertEqual(n2check.os_family(), 'alpine')
+
+    def test_simple_rpm_compare(self):
+        self.assertEqual(
+            n2check._simple_rpm_compare(
+                '1.20.1-32.el9_9.2', '1.20.1-32.el9_9.1'), 1)
+        self.assertEqual(
+            n2check._simple_rpm_compare(
+                '1.20.1-32.el9_9.1', '1.20.1-32.el9_9.2'), -1)
+        self.assertEqual(
+            n2check._simple_rpm_compare(
+                '1.21.5-150400.3.28.1', '1.21.5-150400.3.27.1'), 1)
+        self.assertEqual(
+            n2check._simple_rpm_compare(
+                '1.26.3-10.module+el9.9.0+25360+9b756829.4',
+                '1.26.3-10.module+el9.9.0+25360+9b756829.4'), 0)
+
+    def test_alpine_compare(self):
+        self.assertEqual(
+            n2check._simple_alpine_compare('1.30.7-r0', '1.30.7-r0'), 0)
+        self.assertEqual(
+            n2check._simple_alpine_compare('1.28.3-r8', '1.28.3-r7'), 1)
+        self.assertEqual(
+            n2check._simple_alpine_compare('1.26.3-r3', '1.26.3-r4'), -1)
+
+    def test_upstream_package_status(self):
+        self.assertEqual(
+            n2check.upstream_package_status('1.30.6'), 'vulnerable')
+        self.assertEqual(
+            n2check.upstream_package_status('1.30.7'), 'fixed')
+        self.assertEqual(
+            n2check.upstream_package_status('1.31.8'), 'vulnerable')
+        self.assertEqual(
+            n2check.upstream_package_status('1.31.9'), 'fixed')
+
+    def test_alpine_package_info(self):
+        def fake_command(command, timeout=10):
+            if tuple(command) == ('apk', 'info', '-v', 'nginx'):
+                return 'nginx-1.28.3-r8'
+            return ''
+
+        def fake_read(path):
+            if path == '/etc/alpine-release':
+                return '3.23.3'
+            return ''
+
+        with mock.patch('n2check._command_output',
+                        side_effect=fake_command), \
+                mock.patch('n2check._read_text', side_effect=fake_read):
+            info = n2check.alpine_package_info()
+
+        self.assertEqual(info['status'], 'fixed')
+        self.assertEqual(set(info['fixed_cves']),
+                         {'CVE-2026-123007', 'CVE-2026-123634',
+                          'CVE-2026-123633', 'CVE-2026-121810',
+                          'CVE-2026-113425'})
+
+    def test_rpm_changelog_markers(self):
+        self.assertTrue(
+            n2check._N2ROOT_CVE_RE.search('Resolves: CVE-2026-123007'))
+        self.assertTrue(
+            n2check._N2ROOT_TEXT_RE.search('flow control window overflow'))
+
+    def test_rpm_partial_fix(self):
+        outputs = {
+            ('rpm', '-q', '--qf', '%{NAME}\t%{VERSION}-%{RELEASE}\n',
+             '-f', '/usr/sbin/nginx'):
+                'nginx\t1.20.1-32.el9_9.1',
+            ('rpm', '-q', '--changelog', 'nginx'):
+                'Resolves: CVE-2026-123007\nResolves: CVE-2026-123633',
+        }
+
+        def fake_command(command, timeout=10):
+            return outputs.get(tuple(command), '')
+
+        with mock.patch('n2check.shutil.which',
+                        return_value='/usr/sbin/nginx'), \
+                mock.patch('n2check._command_output',
+                           side_effect=fake_command), \
+                mock.patch('n2check.os_family', return_value='rpm'):
+            info = n2check.rpm_package_info('/usr/sbin/nginx')
+
+        self.assertEqual(info['status'], 'partial')
+        self.assertEqual(set(info['fixed_cves']),
+                         {'CVE-2026-123007', 'CVE-2026-123633'})
+        self.assertNotIn('CVE-2026-123634', info['fixed_cves'])
+        self.assertNotIn('CVE-2026-113425', info['fixed_cves'])
 
 
 class ConfigTests(unittest.TestCase):

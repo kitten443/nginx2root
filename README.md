@@ -11,7 +11,7 @@ Python 3 чекер для **nginx2root** — набора из пяти уяз�
 
 Проверяет сайт по URL, список сайтов из файла или локальный nginx.
 В режиме `--local` дополнительно разбирает `nginx -V`, `nginx -T`,
-версию Debian-пакета и состояние модуля SCTP.
+версию пакета ОС и состояние модуля SCTP.
 
 > ⚠️ Инструмент **только диагностирует**. Он не содержит эксплойтов,
 > не отправляет атакующих запросов и не проверяет фактическую
@@ -27,11 +27,13 @@ Python 3 чекер для **nginx2root** — набора из пяти уяз�
 - **Локально** (`--local`): запускает `nginx -v`, `nginx -V`, `nginx -T`,
   определяет сборку (HTTP/2, HTTP/3, mail), опасные директивы
   (`http2`, `quic`, `resolver`, `proxy_pass` с переменной, `mirror`,
-  `auth_http`) и версию Debian-пакета.
-- **Debian**: учитывает security-патчи для низких версий nginx
-  (`1.22.1-9+deb12u11` в bookworm и `1.26.3-3+deb13u11` в trixie).
-  Без этого `nginx -v` показывает «уязвимую» 1.22.1/1.26.3, хотя пакет
-  уже исправлен.
+  `auth_http`) и версию пакета ОС.
+- **Debian, Ubuntu, RHEL, Fedora, AlmaLinux, Rocky, Oracle Linux,
+  Amazon Linux, Alpine, SUSE, Arch, FreeBSD**: учитывает security-патчи
+  для низких версий
+  nginx. Без этого `nginx -v` показывает «уязвимую» 1.22.1/1.26.3, хотя
+  пакет уже исправлен. Для RPM-систем из changelog извлекаются конкретные
+  CVE, поэтому частичный фикс не считается полным.
 - **SCTP**: в `--local` проверяет, загружен ли модуль, встроен ли он в ядро
   и заблокирован ли через `modprobe.d`. Это advisory: на код возврата
   не влияет.
@@ -107,37 +109,124 @@ VULNERABLE: nginx 1.26.3
   SCTP в ядре (LPE до root): WARNING — модуль sctp не загружен, но может загрузиться автоматически; если SCTP не нужен, добавьте install sctp /bin/false
 ```
 
-## Debian: патчи для низких версий
+## Патчи дистрибутивов и репозиториев
 
-Debian уже выпустил исправления, при этом `nginx -v` **не меняется**:
-пакет обновляется, а upstream-версия остаётся прежней.
+`nginx -v` **не меняется** после backport: пакет обновляется, а upstream-версия
+остаётся прежней. Поэтому `--local` определяет семейство ОС и пакетный менеджер:
 
-| Релиз Debian | Исправленный пакет | Advisory |
+- **Debian/Ubuntu** — `dpkg-query` + `dpkg --compare-versions`;
+- **RHEL, Fedora, AlmaLinux, Rocky, Oracle Linux, Amazon Linux, SUSE** —
+  `rpm -qf` и `rpm -q --changelog`; из changelog извлекаются конкретные CVE,
+  поэтому «частично исправленный» пакет не выдаётся за полностью исправленный;
+- **Alpine** — `apk` и таблица исправленных версий по веткам;
+- **Arch Linux** — `pacman -Q` + upstream-версия;
+- **FreeBSD** — `pkg query` + upstream-версия.
+
+Если пакет закрывает только часть CVE, статус пакета будет
+**«исправлено частично»**, а незакрытые CVE останутся `VULNERABLE`.
+
+### Debian
+
+| Релиз | Исправленный пакет | Advisory |
 |---|---|---|
 | Debian 12 bookworm | `1.22.1-9+deb12u11` | [DLA-4918-1](https://security-tracker.debian.org/tracker/DLA-4918-1) |
 | Debian 13 trixie | `1.26.3-3+deb13u11` | [DSA-6642-1](https://security-tracker.debian.org/tracker/DSA-6642-1) |
 | Debian sid | `1.30.6-4` | — |
 | Debian testing/forky | `1.30.6-3` ещё уязвим (на 20.11.2026) | ждать `1.30.6-4` |
 
-`--local` читает версию пакета через `dpkg-query` и сравнивает её с
-исправленной через `dpkg --compare-versions`. Если пакет исправлен,
-итоговый статус будет `OK`, даже когда `nginx -v` показывает `1.22.1`
-или `1.26.3`:
+В bookworm нет HTTP/3, поэтому `CVE-2026-121810` к 1.22.1 не применима.
+Для nginx.org-пакетов (`1.30.7-1~bookworm`, `1.31.8-1~bookworm`) вердикт
+считается по upstream-версии, иначе `1.31.8` ошибочно выглядел бы «новее»
+Debian-исправления `1.22.1`.
+
+### Ubuntu
+
+Ubuntu закрыла nginx2root в [USN-9159-1](https://usn.ubuntu.com/USN-9159-1)
+(19.11.2026). Версии пакетов:
+
+| Релиз | Исправленный пакет |
+|---|---|
+| 26.10 stonking | `1.30.4-7ubuntu1.2` |
+| 26.04 LTS resolute | `1.28.3-2ubuntu1.13` |
+| 24.04 LTS noble | `1.24.0-2ubuntu7.20` |
+| 22.04 LTS jammy | `1.18.0-6ubuntu14.23` |
+| 20.04 LTS focal | `1.18.0-0ubuntu1.7+esm5` (Ubuntu Pro) |
+| 18.04 LTS bionic | `1.14.0-0ubuntu1.11+esm6` (Ubuntu Pro) |
+| 16.04 LTS xenial | `1.10.3-0ubuntu0.16.04.5+esm11` (Ubuntu Pro) |
+| 14.04 LTS trusty | `1.4.6-1ubuntu3.9+esm10` (Ubuntu Pro; 123007 не применима) |
+
+`CVE-2026-121810` исправлена только в 26.04/26.10 — в 1.18/1.24 нет HTTP/3.
+Для старых выпусков нужен действующий Ubuntu Pro/ESM.
+
+Ubuntu отдельно отмечает, что в старых 1.14/1.18 существует аналогичный
+cleartext HTTP/2 путь для `CVE-2026-123633`; чекер ориентируется на
+официальный диапазон nginx.org (1.19.7+), поэтому при `listen ... http2`
+без `ssl` сверяйтесь с USN-9159-1.
+
+### RHEL, AlmaLinux, Rocky, Oracle Linux, Amazon Linux
+
+| Система | Исправленный пакет | Advisory |
+|---|---|---|
+| RHEL 9, nginx 1.20.1 | `1.20.1-32.el9_9.2` | RHSA-2026:100748 |
+| RHEL 9, nginx:1.26 | `1.26.3-10.module+el9.9.0+25360+9b756829.4` | RHSA-2026:100745 |
+| RHEL 9, nginx:1.24 | `1.24.0-9.module+el9.9.0+25361+10e8035d.4` | RHSA-2026:100746 |
+| RHEL 9 EUS, nginx:1.24 | `1.24.0-7.module+el9.8.0+25374+40bd8b35.7` | RHSA-2026:100750 |
+| RHEL 8, nginx:1.24 | `1.24.0-3.module+el8.10.0+25364+53b7037a.9` | RHSA-2026:100747 |
+| AlmaLinux 9 | `1.20.1-32.el9_9.1.alma.3` | [ALSA-2026:A025](https://errata.almalinux.org/9/ALSA-2026-A025.html) |
+| AlmaLinux 10 | `1.26.3-16.el10_3.1.alma.2` | [ALSA-2026:A024](https://errata.almalinux.org/10/ALSA-2026-A024.html) |
+| Oracle Linux 9, nginx:1.26 | `1.26.3-10.0.2.module+el9.9.0+91132+a75313dd.1` | [ELSA-2026-500648](https://linux.oracle.com/errata/ELSA-2026-500648.html) |
+| Oracle Linux 10 | `1.26.3-16.0.1.el10_3.3` | [ELSA-2026-100744](https://linux.oracle.com/errata/ELSA-2026-100744.html) |
+| Amazon Linux 2023 | `1.30.7-1.amzn2023.0.1` | ALAS2023-2026-3494 |
+| Amazon Linux 2 (Nginx1 Extra) | `1.30.7-1.amzn2.0.1` | ALAS2NGINX1-2026-018 |
+| Rocky Linux | проверяйте `rpm -q --changelog nginx` | отдельный advisory на 20.11.2026 не подтверждён |
+
+Важно: разные advisory закрывают разный набор CVE. Например, AlmaLinux 9
+в A025 указывает только `CVE-2026-123007` и `CVE-2026-123633`; если changelog
+пакета не содержит остальные CVE, они останутся в статусе `VULNERABLE`.
+
+### Alpine
+
+| Ветка | Исправленный пакет |
+|---|---|
+| edge, 3.24 | `1.30.7-r0` |
+| 3.23, 3.22 | `1.28.3-r8` |
+| 3.21 | `1.26.3-r4` |
+
+### SUSE
+
+| Продукт | Исправленный пакет | Статус на 19.11.2026 |
+|---|---|---|
+| openSUSE Tumbleweed | `1.31.9-1.1` | выпущен |
+| SLES 15 SP4/SP5 LTSS | `1.21.5-150400.3.28.1` | в QA |
+| SLES 15 SP6/SP7 | `1.21.5-150600.10.30.1` | в QA |
+| SLES 16, openSUSE Leap 16 | ожидается | проверяйте SUSE CVE page |
+
+### Fedora
+
+На 20.11.2026 в стабильных Fedora 43/44/45 был `nginx 1.30.6-2` — это ещё
+**уязвимая** версия (нужен 1.30.7). Проверяйте `dnf update nginx` и
+`rpm -q --changelog nginx`: чекер ищет в changelog конкретные CVE.
+
+### Arch Linux и FreeBSD
+
+- Arch: `nginx 1.30.7-1` (сборка 18.11.2026).
+- FreeBSD: обновление порта `www/nginx` до 1.30.7/1.31.9; `pkg` показывает
+  установленную версию, чекер сравнивает её с upstream.
+
+### nginx.org
+
+Официальные релизы: **1.30.7 stable** и **1.31.9 mainline**. Пакеты nginx.org
+для дистрибутивов (например, `1.30.7-1~bookworm`) проверяются по upstream-версии.
+
+### Пример
 
 ```
 OK: nginx 1.22.1
-  Пакет: nginx 1.22.1-9+deb12u11 (bookworm) — исправлено; исправление: 1.22.1-9+deb12u11 (DLA-4918-1)
+  Пакет: nginx 1.22.1-9+deb12u11 (bookworm) — исправлено; исправление: 1.22.1-9+deb12u11 (DLA-4918-1) [dpkg]
 ```
 
-Сравнение с Debian-таблицей применяется только к пакету той же upstream-ветки
-(`1.22.1`, `1.26.3`, `1.30.6`). Для nginx.org-пакетов (`1.30.7-1~bookworm`,
-`1.31.8-1~bookworm` и т.п.) вердикт считается по upstream-версии, иначе
-пакет `1.31.8` ошибочно выглядел бы «новее» Debian-исправления `1.22.1`.
-
 Удалённо версию пакета не видно: сайт отдаёт только `Server: nginx/1.22.1`.
-Поэтому URL-режим честно покажет `VULNERABLE` и подскажет проверить
-пакет локально. Для Debian 11/10 и других релизов сверяйтесь с
-[Debian Security Tracker](https://security-tracker.debian.org/tracker/source-package/nginx).
+URL-режим честно покажет `VULNERABLE` и подскажет проверить пакет локально.
 
 На nginx 1.22.1 из Debian 12 директивы `http2 off;` ещё нет. Если нужно
 временно отключить HTTP/2 до установки патча, уберите параметр `http2`
@@ -185,7 +274,7 @@ echo 'install sctp /bin/false' | sudo tee /etc/modprobe.d/disable-sctp.conf
 | Код | Статус | Значение |
 |---|---|---|
 | 0 | `OK` | Версия/пакет исправлены |
-| 1 | `VULNERABLE` | Версия в уязвимом диапазоне (с учётом Debian-пакета в `--local`) |
+| 1 | `VULNERABLE` | Версия в уязвимом диапазоне (с учётом пакета ОС в `--local`) |
 | 3 | `UNKNOWN` | Версия не определена: скрытый `Server`, CDN, сетевая ошибка, неизвестный пакет |
 | 2 | — | Ошибка аргументов командной строки |
 
@@ -217,6 +306,9 @@ echo 'install sctp /bin/false' | sudo tee /etc/modprobe.d/disable-sctp.conf
 ```
 
 В `--local` добавляются `build`, `config`, `package`, `advisories`.
+В `package` есть `status` (`fixed`/`partial`/`vulnerable`/`unknown`),
+`source` (`dpkg`, `rpm-changelog`, `apk`, `pacman`, `pkg`, `upstream`)
+и `fixed_cves` — какие именно CVE закрыл пакет.
 В `--file --json` каждый результат — отдельная JSON-строка (JSON Lines)
 с полем `url`.
 
@@ -240,9 +332,16 @@ python3 -m unittest discover -s tests -v
   или `POSSIBLE`.
 - `--local` разбирает конфигурацию эвристически. `nginx -T` показывает
   итоговый конфиг, включая `include`, но без root его прочитать нельзя.
-- Сравнение Debian-пакетов работает для bookworm/trixie/sid; для других
-  дистрибутивов и бэкпортов (Ubuntu, RHEL) используется upstream-версия,
-  поэтому возможны ложные срабатывания. Сверяйтесь с advisory вендора.
+- Сравнение пакетов актуально на **20.11.2026**. Для Debian/Ubuntu
+  используется `dpkg` и таблица исправленных версий; для RPM-систем —
+  `rpm -q --changelog` (если changelog не вырезан в сборке); для Alpine —
+  таблица веток; для Arch/FreeBSD — upstream-версия. Неучтённый бэкпорт
+  может дать ложный `VULNERABLE`; сверяйтесь с advisory вендора.
+- Разные advisory закрывают разный набор CVE. Если пакет исправлен
+  частично, чекер покажет «исправлено частично» и оставит незакрытые CVE
+  в статусе `VULNERABLE`.
+- SUSE SLES 15-пакеты на 19.11.2026 были в QA; до установки такой версии
+  чекер считает систему уязвимой.
 - Чекер не выполняет эксплуатацию и не подтверждает наличие фикса в
   конкретном бинарнике — только оценивает версию, пакет и конфигурацию.
 
@@ -254,6 +353,16 @@ python3 -m unittest discover -s tests -v
 - [Debian Security Tracker — CVE-2026-123007](https://security-tracker.debian.org/tracker/CVE-2026-123007)
 - [DSA-6642-1](https://security-tracker.debian.org/tracker/DSA-6642-1)
 - [DLA-4918-1](https://security-tracker.debian.org/tracker/DLA-4918-1)
+- [Ubuntu USN-9159-1](https://usn.ubuntu.com/USN-9159-1)
+- [Red Hat CVE-2026-123007](https://access.redhat.com/security/cve/cve-2026-123007)
+- [AlmaLinux ALSA-2026:A025](https://errata.almalinux.org/9/ALSA-2026-A025.html)
+- [AlmaLinux ALSA-2026:A024](https://errata.almalinux.org/10/ALSA-2026-A024.html)
+- [Oracle Linux ELSA-2026-500648](https://linux.oracle.com/errata/ELSA-2026-500648.html)
+- [Oracle Linux ELSA-2026-100744](https://linux.oracle.com/errata/ELSA-2026-100744.html)
+- [Amazon Linux ALAS2NGINX1-2026-018](https://alas.aws.amazon.com/AL2/ALAS2NGINX1-2026-018.html)
+- [Alpine secdb — CVE-2026-123007](https://security.alpinelinux.org/vuln/CVE-2026-123007)
+- [SUSE CVE-2026-123007](https://www.suse.com/security/cve/CVE-2026-123007.html)
+- [Arch Linux nginx package](https://archlinux.org/packages/extra/x86_64/nginx/)
 - [Equixly — nginx2root](https://equixly.com/blog/2026/11/18/nginx2root-disabling-http-2-stops-two-of-five-nginx-rce-flaws/)
 
 ## Лицензия
