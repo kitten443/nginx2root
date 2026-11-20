@@ -833,6 +833,10 @@ def check_local(nginx_bin='nginx'):
             if package_info.get('advisory'):
                 note += f" ({package_info['advisory']})"
             for row in rows:
+                # CVE, неприменимые к upstream-версии (например, HTTP/3
+                # в 1.22.1), не выдаём за «исправленные пакетом».
+                if row['version_status'] == 'ok':
+                    continue
                 row.update(version_status='ok', exposure='not_applicable',
                            detail=note)
 
