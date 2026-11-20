@@ -139,6 +139,10 @@ OK: nginx 1.22.1
 пакет локально. Для Debian 11/10 и других релизов сверяйтесь с
 [Debian Security Tracker](https://security-tracker.debian.org/tracker/source-package/nginx).
 
+На nginx 1.22.1 из Debian 12 директивы `http2 off;` ещё нет. Если нужно
+временно отключить HTTP/2 до установки патча, уберите параметр `http2`
+из соответствующих `listen`-директив.
+
 ## Уязвимые версии
 
 Официальные данные [nginx.org](https://nginx.org/en/security_advisories.html):
