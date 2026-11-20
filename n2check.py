@@ -957,6 +957,10 @@ def rpm_package_info(nginx_bin='nginx'):
             info.update(status='fixed', source='suse-advisory',
                         fixed_version=candidate,
                         fixed_cves=sorted(applicable))
+    if data.get('ID', '').lower() == 'centos' and info['status'] != 'fixed':
+        info['note'] = ('CentOS Linux 7/8 EOL и официальных фиксов не получает; '
+                        'для CentOS Stream ждите RHEL-сборку или проверьте '
+                        'rpm -q --changelog nginx')
     return info
 
 

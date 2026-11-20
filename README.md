@@ -28,7 +28,7 @@ Python 3 чекер для **nginx2root** — набора из пяти уяз�
   определяет сборку (HTTP/2, HTTP/3, mail), опасные директивы
   (`http2`, `quic`, `resolver`, `proxy_pass` с переменной, `mirror`,
   `auth_http`) и версию пакета ОС.
-- **Debian, Ubuntu, RHEL, Fedora, AlmaLinux, Rocky, Oracle Linux,
+- **Debian, Ubuntu, RHEL, CentOS, Fedora, AlmaLinux, Rocky, Oracle Linux,
   Amazon Linux, Alpine, SUSE, Arch, FreeBSD**: учитывает security-патчи
   для низких версий
   nginx. Без этого `nginx -v` показывает «уязвимую» 1.22.1/1.26.3, хотя
@@ -163,11 +163,14 @@ cleartext HTTP/2 путь для `CVE-2026-123633`; чекер ориентир�
 официальный диапазон nginx.org (1.19.7+), поэтому при `listen ... http2`
 без `ssl` сверяйтесь с USN-9159-1.
 
-### RHEL, AlmaLinux, Rocky, Oracle Linux, Amazon Linux
+### RHEL, CentOS, AlmaLinux, Rocky, Oracle Linux, Amazon Linux
 
 | Система | Исправленный пакет | Advisory |
 |---|---|---|
 | RHEL 9, nginx 1.20.1 | `1.20.1-32.el9_9.2` | RHSA-2026:100748 |
+| CentOS Stream 9 | на 20.11.2026 фикса нет: в c9s `1.20.1-32` | ждать RHEL-сборку |
+| CentOS Stream 10 | на 20.11.2026 фикса нет: в c10s `1.26.3` | ждать RHEL-сборку |
+| CentOS Linux 7/8 | EOL | официальных фиксов нет |
 | RHEL 9, nginx:1.26 | `1.26.3-10.module+el9.9.0+25360+9b756829.4` | RHSA-2026:100745 |
 | RHEL 9, nginx:1.24 | `1.24.0-9.module+el9.9.0+25361+10e8035d.4` | RHSA-2026:100746 |
 | RHEL 9 EUS, nginx:1.24 | `1.24.0-7.module+el9.8.0+25374+40bd8b35.7` | RHSA-2026:100750 |
@@ -179,6 +182,12 @@ cleartext HTTP/2 путь для `CVE-2026-123633`; чекер ориентир�
 | Amazon Linux 2023 | `1.30.7-1.amzn2023.0.1` | ALAS2023-2026-3494 |
 | Amazon Linux 2 (Nginx1 Extra) | `1.30.7-1.amzn2.0.1` | ALAS2NGINX1-2026-018 |
 | Rocky Linux | проверяйте `rpm -q --changelog nginx` | отдельный advisory на 20.11.2026 не подтверждён |
+
+CentOS Stream 9/10 — rolling-превью RHEL: фикс приходит вместе с RHEL-сборкой.
+На 20.11.2026 в c9s/c10s ещё не было changelog-записи с `CVE-2026-123007`;
+проверяйте `rpm -q --changelog nginx`. CentOS Linux 7/8 не получают
+официальных обновлений — только сторонний extended support (например, TuxCare)
+или миграция.
 
 Важно: разные advisory закрывают разный набор CVE. Например, AlmaLinux 9
 в A025 указывает только `CVE-2026-123007` и `CVE-2026-123633`; если changelog
@@ -355,6 +364,7 @@ python3 -m unittest discover -s tests -v
 - [DLA-4918-1](https://security-tracker.debian.org/tracker/DLA-4918-1)
 - [Ubuntu USN-9159-1](https://usn.ubuntu.com/USN-9159-1)
 - [Red Hat CVE-2026-123007](https://access.redhat.com/security/cve/cve-2026-123007)
+- [CentOS Stream nginx spec (c9s/c10s)](https://gitlab.com/redhat/centos-stream/rpms/nginx)
 - [AlmaLinux ALSA-2026:A025](https://errata.almalinux.org/9/ALSA-2026-A025.html)
 - [AlmaLinux ALSA-2026:A024](https://errata.almalinux.org/10/ALSA-2026-A024.html)
 - [Oracle Linux ELSA-2026-500648](https://linux.oracle.com/errata/ELSA-2026-500648.html)
