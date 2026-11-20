@@ -1,0 +1,257 @@
+# nginx2root — чекер уязвимости (Python 3)
+
+Python 3 чекер для **nginx2root** — набора из пяти уязвимостей nginx
+([CVE-2026-123007](https://www.cve.org/CVERecord?id=CVE-2026-123007),
+[CVE-2026-123634](https://www.cve.org/CVERecord?id=CVE-2026-123634),
+[CVE-2026-123633](https://www.cve.org/CVERecord?id=CVE-2026-123633),
+[CVE-2026-121810](https://www.cve.org/CVERecord?id=CVE-2026-121810),
+[CVE-2026-113425](https://www.cve.org/CVERecord?id=CVE-2026-113425))
+и отдельной уязвимости SCTP в ядре Linux, с которой RCE в worker'е
+превращается в root на хосте.
+
+Проверяет сайт по URL, список сайтов из файла или локальный nginx.
+В режиме `--local` дополнительно разбирает `nginx -V`, `nginx -T`,
+версию Debian-пакета и состояние модуля SCTP.
+
+> ⚠️ Инструмент **только диагностирует**. Он не содержит эксплойтов,
+> не отправляет атакующих запросов и не проверяет фактическую
+> эксплуатацию. Запускайте его только на своих системах.
+
+## Что делает
+
+- **По URL**: читает заголовок `Server`, извлекает версию nginx и проверяет
+  её по официальным диапазонам. Дополнительно согласует ALPN (`h2`) и
+  смотрит `Alt-Svc` на признаки HTTP/3.
+- **По списку** (`--file`): сканирует много сайтов — синхронно,
+  многопоточно (`--threads N`) или асинхронно (`--async`).
+- **Локально** (`--local`): запускает `nginx -v`, `nginx -V`, `nginx -T`,
+  определяет сборку (HTTP/2, HTTP/3, mail), опасные директивы
+  (`http2`, `quic`, `resolver`, `proxy_pass` с переменной, `mirror`,
+  `auth_http`) и версию Debian-пакета.
+- **Debian**: учитывает security-патчи для низких версий nginx
+  (`1.22.1-9+deb12u11` в bookworm и `1.26.3-3+deb13u11` в trixie).
+  Без этого `nginx -v` показывает «уязвимую» 1.22.1/1.26.3, хотя пакет
+  уже исправлен.
+- **SCTP**: в `--local` проверяет, загружен ли модуль, встроен ли он в ядро
+  и заблокирован ли через `modprobe.d`. Это advisory: на код возврата
+  не влияет.
+
+## Установка
+
+Требуется Python 3.8+ (только стандартная библиотека, зависимостей нет).
+Для `--local` нужен установленный nginx; для чтения конфигурации
+через `nginx -T` обычно нужен root.
+
+```bash
+git clone https://github.com/kitten443/nginx2root.git
+cd nginx2root
+```
+
+## Использование
+
+```bash
+# Проверить сайт
+python3 n2check.py https://example.com
+python3 n2check.py https://example.com --json
+python3 n2check.py https://example.com --timeout 15
+python3 n2check.py https://example.com --insecure   # не проверять TLS-сертификат
+
+# Проверить локальный nginx
+python3 n2check.py --local
+sudo python3 n2check.py --local                     # чтобы nginx -T прочитал конфиг
+python3 n2check.py --local --nginx /usr/sbin/nginx
+python3 n2check.py --local --json
+
+# Список сайтов: одна строка — один URL, # — комментарий
+python3 n2check.py --file sites.txt
+python3 n2check.py --file sites.txt --threads 10
+python3 n2check.py --file sites.txt --threads 50 --async
+cat sites.txt | python3 n2check.py --file - --threads 10 --json
+```
+
+Пример `sites.txt`:
+
+```
+# свои проекты
+https://example.com
+https://shop.example.com  # интернет-магазин
+https://blog.example.com
+```
+
+Пример вывода по URL:
+
+```
+VULNERABLE: nginx 1.31.8
+  Server: nginx/1.31.8
+  HTTP/2: да (ALPN h2)
+  HTTP/3: не рекламируется (отсутствие Alt-Svc не доказывает отсутствие QUIC)
+  Примечание: версия из баннера может не учитывать бэкпорт дистрибутива; для Debian проверьте пакет локально: --local.
+  CVE-2026-123007 (переполнение в HTTP/2 flow control): EXPOSED — сервер согласовал HTTP/2 по ALPN (h2)
+  CVE-2026-123634 (use-after-free в DNS resolver): UNKNOWN — нужны resolver, proxy_pass с переменной и subrequest — конфигурация не видна удалённо
+  CVE-2026-123633 (use-after-free в HTTP/2 (upstream)): POSSIBLE — HTTP/2 включён; наличие upstream проверяется по конфигурации
+  CVE-2026-121810 (use-after-free в HTTP/3 (upstream)): UNKNOWN — HTTP/3 удалённо не подтверждён; отсутствие Alt-Svc ничего не доказывает
+  CVE-2026-113425 (use-after-free в mail proxy (auth_http)): UNKNOWN — нужен mail proxy с proxy on и auth_http — конфигурация не видна удалённо
+```
+
+Пример локального вывода:
+
+```
+VULNERABLE: nginx 1.26.3
+  Сборка: HTTP/2=да, HTTP/3=да, mail=да
+  Конфигурация: HTTP/2=да, HTTP/3=нет, resolver=да, proxy_pass с переменной=да, mirror=да, mail proxy=да
+  CVE-2026-123007 (переполнение в HTTP/2 flow control): EXPOSED — HTTP/2 включён в конфигурации
+  CVE-2026-123634 (use-after-free в DNS resolver): POSSIBLE — есть resolver, proxy_pass с переменной и subrequest (mirror/SSI)
+  CVE-2026-123633 (use-after-free в HTTP/2 (upstream)): POSSIBLE — HTTP/2 включён и есть proxy_pass/grpc_pass на upstream
+  CVE-2026-121810 (use-after-free в HTTP/3 (upstream)): NOT EXPOSED — HTTP/3/QUIC не включён в конфигурации
+  CVE-2026-113425 (use-after-free в mail proxy (auth_http)): EXPOSED — mail-блок с proxy on и auth_http
+  SCTP в ядре (LPE до root): WARNING — модуль sctp не загружен, но может загрузиться автоматически; если SCTP не нужен, добавьте install sctp /bin/false
+```
+
+## Debian: патчи для низких версий
+
+Debian уже выпустил исправления, при этом `nginx -v` **не меняется**:
+пакет обновляется, а upstream-версия остаётся прежней.
+
+| Релиз Debian | Исправленный пакет | Advisory |
+|---|---|---|
+| Debian 12 bookworm | `1.22.1-9+deb12u11` | [DLA-4918-1](https://security-tracker.debian.org/tracker/DLA-4918-1) |
+| Debian 13 trixie | `1.26.3-3+deb13u11` | [DSA-6642-1](https://security-tracker.debian.org/tracker/DSA-6642-1) |
+| Debian sid | `1.30.6-4` | — |
+| Debian testing/forky | `1.30.6-3` ещё уязвим (на 20.11.2026) | ждать `1.30.6-4` |
+
+`--local` читает версию пакета через `dpkg-query` и сравнивает её с
+исправленной через `dpkg --compare-versions`. Если пакет исправлен,
+итоговый статус будет `OK`, даже когда `nginx -v` показывает `1.22.1`
+или `1.26.3`:
+
+```
+OK: nginx 1.22.1
+  Пакет: nginx 1.22.1-9+deb12u11 (bookworm) — исправлено; исправление: 1.22.1-9+deb12u11 (DLA-4918-1)
+```
+
+Сравнение с Debian-таблицей применяется только к пакету той же upstream-ветки
+(`1.22.1`, `1.26.3`, `1.30.6`). Для nginx.org-пакетов (`1.30.7-1~bookworm`,
+`1.31.8-1~bookworm` и т.п.) вердикт считается по upstream-версии, иначе
+пакет `1.31.8` ошибочно выглядел бы «новее» Debian-исправления `1.22.1`.
+
+Удалённо версию пакета не видно: сайт отдаёт только `Server: nginx/1.22.1`.
+Поэтому URL-режим честно покажет `VULNERABLE` и подскажет проверить
+пакет локально. Для Debian 11/10 и других релизов сверяйтесь с
+[Debian Security Tracker](https://security-tracker.debian.org/tracker/source-package/nginx).
+
+## Уязвимые версии
+
+Официальные данные [nginx.org](https://nginx.org/en/security_advisories.html):
+исправлены в **1.30.7 (stable)** и **1.31.9 (mainline)**.
+
+| CVE | Что нужно | Уязвимые версии | Закрывается выключением HTTP/2? |
+|---|---|---|---|
+| CVE-2026-123007 | HTTP/2 включён | 1.9.5 – 1.31.8 | Да |
+| CVE-2026-123634 | `resolver` + `proxy_pass` с переменной + subrequest (`mirror`/SSI) | 0.6.18 – 1.31.8 | Нет |
+| CVE-2026-123633 | HTTP/2 + forwarding на upstream | 1.19.7 – 1.31.8 | Да |
+| CVE-2026-121810 | HTTP/3 + forwarding на upstream | 1.25.0 – 1.31.8 | Нет |
+| CVE-2026-113425 | mail proxy с `proxy on` и `auth_http` | 0.5.33 – 1.31.8 | Нет |
+
+Для CVE-2026-123634 одного `mirror off` недостаточно: Xint отмечает,
+что другие subrequest-механизмы (например, SSI) могут вести к тому же
+use-after-free. Надёжнее заменить `proxy_pass` с переменной на фиксированный
+`upstream`.
+
+## SCTP и root
+
+Пять уязвимостей nginx дают выполнение команд с правами worker'а.
+Xint показал цепочку с отдельной уязвимостью SCTP в ядре Linux
+(появилась в 4.15), которая повышает права до root и, в тестах Xint,
+позволяет выйти из Docker-контейнера на хост. Отдельный CVE для этой
+уязвимости Xint не называет; на момент раскрытия (18.11.2026) патча
+ядра ещё не было — следите за обновлениями ядра.
+
+Если SCTP не используется, заблокируйте модуль:
+
+```bash
+echo 'install sctp /bin/false' | sudo tee /etc/modprobe.d/disable-sctp.conf
+```
+
+`blacklist sctp` сам по себе не мешает явной загрузке через `modprobe`.
+Чекер в `--local` показывает состояние SCTP, но **не меняет код возврата**:
+это дополнительная рекомендация, а не вердикт по nginx2root.
+
+## Коды возврата
+
+| Код | Статус | Значение |
+|---|---|---|
+| 0 | `OK` | Версия/пакет исправлены |
+| 1 | `VULNERABLE` | Версия в уязвимом диапазоне (с учётом Debian-пакета в `--local`) |
+| 3 | `UNKNOWN` | Версия не определена: скрытый `Server`, CDN, сетевая ошибка, неизвестный пакет |
+| 2 | — | Ошибка аргументов командной строки |
+
+Для `--file` коды агрегируются: `1` важнее `3`, `3` важнее `0`.
+
+## JSON
+
+Одиночная проверка:
+
+```json
+{
+  "patch_status": "vulnerable",
+  "nginx_version": "1.31.8",
+  "server": "nginx/1.31.8",
+  "http2": true,
+  "http3_advertised": false,
+  "reason": "nginx 1.31.8",
+  "exit_code": 1,
+  "cves": [
+    {
+      "cve": "CVE-2026-123007",
+      "title": "переполнение в HTTP/2 flow control",
+      "version_status": "vulnerable",
+      "exposure": "exposed",
+      "detail": "сервер согласовал HTTP/2 по ALPN (h2)"
+    }
+  ]
+}
+```
+
+В `--local` добавляются `build`, `config`, `package`, `advisories`.
+В `--file --json` каждый результат — отдельная JSON-строка (JSON Lines)
+с полем `url`.
+
+## Тесты
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+## Ограничения
+
+- URL-режим видит только заголовок `Server`. При `server_tokens off`,
+  CDN/WAF или другом фронтенде версия будет `UNKNOWN` — это не значит
+  «безопасно».
+- ALPN показывает согласование `h2`, но не доказывает, что HTTP/2 включён
+  в конкретном `server`-блоке. `Alt-Svc` с `h3` — признак HTTP/3, но его
+  отсутствие не доказывает, что QUIC-листенера нет.
+- Удалённо не видны `resolver`, `proxy_pass` с переменной, `mirror`,
+  upstream и mail-блок. Поэтому для CVE-2026-123634, CVE-2026-123633,
+  CVE-2026-121810 и CVE-2026-113425 URL-режим часто даёт `UNKNOWN`
+  или `POSSIBLE`.
+- `--local` разбирает конфигурацию эвристически. `nginx -T` показывает
+  итоговый конфиг, включая `include`, но без root его прочитать нельзя.
+- Сравнение Debian-пакетов работает для bookworm/trixie/sid; для других
+  дистрибутивов и бэкпортов (Ubuntu, RHEL) используется upstream-версия,
+  поэтому возможны ложные срабатывания. Сверяйтесь с advisory вендора.
+- Чекер не выполняет эксплуатацию и не подтверждает наличие фикса в
+  конкретном бинарнике — только оценивает версию, пакет и конфигурацию.
+
+## Источники
+
+- [nginx.org — security advisories](https://nginx.org/en/security_advisories.html)
+- [Xint — NGINX2Root](https://xint.io/blog/nginx2root-remote-code-execution)
+- [Wiz — nginx HTTP/2 RCE](https://www.wiz.io/blog/nginx-http2-rce-vulnerabilities)
+- [Debian Security Tracker — CVE-2026-123007](https://security-tracker.debian.org/tracker/CVE-2026-123007)
+- [DSA-6642-1](https://security-tracker.debian.org/tracker/DSA-6642-1)
+- [DLA-4918-1](https://security-tracker.debian.org/tracker/DLA-4918-1)
+- [Equixly — nginx2root](https://equixly.com/blog/2026/11/18/nginx2root-disabling-http-2-stops-two-of-five-nginx-rce-flaws/)
+
+## Лицензия
+
+Apache License 2.0, см. [LICENSE](LICENSE).
